@@ -1,110 +1,155 @@
-#include<bits/stdc++.h>
-#include "opencv2/opencv.hpp"
+#include <bits/stdc++.h>
+#define bug(x) cout << #x << " = " << (x) << '\n'
+#include <opencv2/opencv.hpp>
 #include <opencv2/tracking.hpp>
-//#include "armadillo"
+#include <octave/oct.h>
 
-using namespace std;
 using namespace cv;
-//using namespace arma;
+using namespace std;
 
-vector <Mat> vec; //Cada elemento do vetor representa uma feature
-int features [30];
+using tensor = vector<Mat>;
+using kernel = tensor;
 
-std::pair<std::vector<Mat>, std::vector< std::vector<Mat>>> generateIntImgs(const std::vector<Mat> &featureImgs) {
-        //PRE:
-    assert( (featureImgs.size() > 0) && (featureImgs.at(0).type() == CV_32FC1) );
+void cv2octave(const Mat &src, Matrix &dst){
 
-        //generate integral images of features
-    std::vector<Mat> regIntImgs;
+    dst = Matrix(src.rows, src.cols);
 
-    for (std::vector<Mat>::const_iterator it=featureImgs.begin(); it!=featureImgs.end(); ++it) {
-        Mat intImg;
-        integral(*it, intImg, CV_64FC1);
-        regIntImgs.push_back(intImg);
-    }
-
-        //generate integral images of each permutation of two multiplied features
-    std::vector< std::vector<Mat> > sqIntImgs;
-
-    for (std::vector<Mat>::const_iterator it=featureImgs.begin(); it!=featureImgs.end(); ++it){
-        std::vector<Mat> sqIntRow;
-
-            //since sqIntImgs is symmetric matrix, only process unique elements
-        const std::size_t rowCount = it - featureImgs.begin();
-        for (std::vector<Mat>::const_iterator jt=featureImgs.begin(); jt<=featureImgs.begin()+rowCount; ++jt) {
-            const Mat sqImg = it->mul(*jt);		//per element multiplication operation
-
-            Mat sqIntImg;
-            integral(sqImg, sqIntImg, CV_64FC1);
-            sqIntRow.push_back(sqIntImg);
-        }
-
-        sqIntImgs.push_back(sqIntRow);
-    }
-
-    const std::pair<std::vector<Mat>, std::vector< std::vector<Mat> > > intImgs = std::make_pair(regIntImgs, sqIntImgs);
-
-
-    return intImgs;
+    for(int i= 0; i < src.rows; ++i)
+      for(int j = 0; j < src.cols; ++j)
+           dst(i, j) = src.at<double>(i, j);
 }
 
+void octave2cv(const Matrix &src, Mat &dst){
 
-void storeObj(const Mat &img){
+  int n = src.rows(), m = src.cols();
+  bug(n), bug(m);
+  //dst = Mat(n, m);
+  /*for(int i= 0; i < dim1(src); ++i)
+    for(int j = 0; j < dim2(src); ++j)
+        dst.at<double>(i, j) = src.elem(i, j);*/
 
-    //guardar o size do objeto
-
-    //generate the feature images and their integrals for the whole object
-    //const std::vector<Mat> objFeatureImgs = generateFeatures(obj);
-    //const std::pair<std::vector<Mat>, std::vector< std::vector<Mat>>> objIntImgs = generateIntImgs(objFeatureImgs);
 }
 
-vector<Mat> generateFeatures(const Mat &img){
+Rect2i cut_image(const Mat &frame)
+{
+    Mat _frame;
+    frame.copyTo(_frame);
+    putText(_frame, "Minimum size", Point(10, 10), FONT_HERSHEY_COMPLEX_SMALL, 0.6, Scalar(0, 255, 0));
+    rectangle(_frame, Rect(20, 20, 21, 21), Scalar(255, 0, 0));
+    Rect2i roi = selectROI("Tracker", _frame, false, false);
 
-    std::vector<Mat> features;
-    std::vector<Mat> bgrImgs;
-    split(img, bgrImgs);
+    roi.width = max(roi.width, 21), roi.height = max(roi.height, 21);
 
-    for (int i=bgrImgs.size()-1; i>=0; --i) {
-        Mat floatImg;
-        bgrImgs.at(i).convertTo(floatImg, CV_32FC1);
-        features.push_back(floatImg);
-    }
+    if(roi.width % 2 == 0) roi.width++;
+    if(roi.height % 2 == 0) roi.height++;
 
-        //calculate image gradients
-    Mat greyImg;
+    return roi;
+}
+tensor get_features(const Mat &frame, const Rect2i &roi)
+{
+    Mat img = frame(roi), greyImg, d[4], aux(img.rows, img.cols, CV_64F), taux[3];
+    tensor features;
+    split(img, taux);
+
     cvtColor(img, greyImg, CV_BGR2GRAY);
-
-    Mat dx, dy, d2x, d2y;
-    Sobel(greyImg, dx, CV_32FC1, 1, 0, 1);
-    Sobel(greyImg, dy, CV_32F, 0, 1, 1);
-    Sobel(greyImg, d2x, CV_32F, 2, 0, 1);
-    Sobel(greyImg, d2y, CV_32F, 0, 2, 1);
-
-    features.push_back(dx);
-    features.push_back(dy);
-    features.push_back(d2x);
-    features.push_back(d2y);
-
-    assert((features.size() > 0) && (features.at(0).type() == CV_32FC1));
-
+    Sobel(greyImg, d[0], CV_64F, 1, 0, 1);
+    Sobel(greyImg, d[1], CV_64F, 0, 1, 1);
+    Sobel(greyImg, d[2], CV_64F, 2, 0, 1);
+    Sobel(greyImg, d[3], CV_64F, 0, 2, 1);
+    for(int i = 0; i < 3; ++i)
+        taux[i].convertTo(aux, CV_64F), features.push_back(aux), aux.release();
+    for(int i = 0; i < 4; ++i)
+        d[i].convertTo(aux, CV_64F), features.push_back(aux), aux.release();
     return features;
 }
 
-void covarianceDistance(Mat cov1, Mat cov2){
+double diss(const Mat &obj, const Mat &c1)
+{
+    Matrix aux1, aux2;
+    ComplexColumnVector eigen_vals;
+    cv2octave(obj, aux1);
+    cv2octave(c1, aux2);
 
-    double EPS = 1e-6;
-    //eigen =  compute generalized eigenvalues(cov1+ EPS, cov2 + EPS)
+    EIG eig = (aux1, aux2);
+    eigen_vals = eig.eigenvalues();
 
-    //dist = sum(log(diag(abs(eigen))));
+    for(octave_idx_type i = 0; i < eigen_vals.rows(); ++i)
+      bug(real(eigen_vals.elem(i, 0)));
+
+
+    return 1;
+
 }
 
-int main() {
 
-    cv:: Mat image = imread("/home/levy/OpencvData/lena.png");
+Mat get_cov(const tensor &roi_tensor)
+{
 
-    Rect2d rec = selectROI(image);
+    int m = roi_tensor[0].rows, n = roi_tensor[0].cols, sz = roi_tensor.size();
+    Mat cov = Mat::zeros(sz, sz, CV_64F),
+        mean = Mat::zeros(1, sz, CV_64F),
+        aux = Mat::zeros(1, sz, CV_64F),
+        aux2 = Mat::zeros(1, sz, CV_64F);
 
-    cv:: imshow("Crop", image(rec));
-    waitKey(0);
+    for(uint i = 0; i < roi_tensor.size(); ++i)
+        mean.at<double>(0, i) = sum(roi_tensor[i])[0] / (m * n);
+    for(int i = 0;  i < m; ++i)
+        for(int j = 0; j < n; ++j)
+        {
+            for(int k = 0; k < sz; ++k)
+                aux.at<double>(0, k) = roi_tensor[k].at<double>(i, j);
+            //bug(aux);
+            mulTransposed(aux, aux2, true, mean, CV_64F);
+            cov += aux2 / (m * n);
+        }
+    //bug(cov);
+    return cov;
+}
+
+
+
+int main(int argc, char** argv)
+{
+
+    VideoCapture cap;
+    if(argc < 2)
+        cap = VideoCapture(0);
+    else
+        cap = VideoCapture(argv[1]);
+    if(!cap.isOpened())
+        return -1;
+
+    Mat frame;
+    int x, y;
+    Rect2i roi;
+    /*if(argc < 2)
+        for(int i = 0; i < 20; ++i) cap >> frame;
+    cap >> frame;
+    */
+    tensor feat;
+    vector<Mat> covs;
+    for(;;)
+    {
+        cap >> frame;
+        if(waitKey(10) == 't')
+        {
+            roi = selectROI("First", frame, false, false);
+            x = roi.x + roi.width / 2 + 1, y = roi.y + roi.height / 2 + 1;
+            feat = get_features(frame, roi);
+            //for(auto &f: feat) bug(f);
+
+            /*for(size_t i = 0; i < feat.size(); ++i)
+                imshow("Feature" + to_string(i), feat[i]);*/
+            rectangle(frame, roi, Scalar(0, 255, 0), 0.5);
+            circle(frame, Point2i(x, y), 1.5, Scalar(255, 0, 0), 2);
+            covs.push_back(get_cov(feat));
+            if(covs.size() == 2)
+            {
+                diss(covs[0], covs[1]);
+            }
+        }
+        imshow("Tracking", frame);
+        if(waitKey(30) == 27) break;
+    }
     return 0;
 }
