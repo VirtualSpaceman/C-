@@ -152,7 +152,6 @@ int main(int argc, const char *argv[]) {
 
     /*
     vector<int> labels;
-    read_csv("/home/philipp/facerec/data/at.txt", db, labels);
     */
 
     // Build a matrix with the observations in row:
